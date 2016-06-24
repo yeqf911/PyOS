@@ -1,6 +1,6 @@
 # coding:utf-8
 from Queue import Queue
-
+import select
 
 # 定义系统调用接口类
 class SystemCall(object):
@@ -21,10 +21,11 @@ class NewTask(SystemCall):
 
     def handler(self):
         tid = self.schedule.new(self.target)
-        self.task.sendvalue = tid   # 把tid赋值给这个task sendvalue, 以供下一次返回给 yield
+        self.task.sendvalue = tid  # 把tid赋值给这个task sendvalue, 以供下一次返回给 yield
         # 所有的 handler() 都有这句话，目的是为了让调度器再次调度
         # 调用 NewTask() 的 函数，即是此处的task，可能会返回一些调度的结果，比如这里的 tid
         self.schedule.schedule(self.task)
+
 
 class KillTask(SystemCall):
     def __init__(self, tid):
@@ -51,6 +52,23 @@ class WaitTask(SystemCall):
             self.schedule.schedule(self.task)
 
 
+class ReadWait(SystemCall):
+    def __init__(self, f):
+        self.f = f
+
+    def handler(self):
+        fd = self.f.fileno()
+        self.schedule.waitforread(self.task, fd)
+
+
+class WriteWait(SystemCall):
+    def __init__(self, f):
+        self.f = f
+
+    def handler(self):
+        fd = self.f.fileno()
+        self.schedule.waitforwrite(self.task, fd)
+
 
 # 定义Task类，所有任务统一管理，用taskid 来表示，相当于pid
 class Task(object):
@@ -72,6 +90,8 @@ class Scheduler(object):
         self.ready = Queue()
         self.taskmap = {}
         self.exit_waiting = {}
+        self.read_waiting = {}
+        self.write_waiting = {}
 
     # 创建新任务
     def new(self, target):
@@ -86,7 +106,7 @@ class Scheduler(object):
 
     # 退出任务，
     def exit(self, task):
-        print 'The task %d terminated' % task.tid
+        print'The task %d terminated' % task.tid
         del self.taskmap[task.tid]  # 退出时将task从taskmap里删除
         # 当一个 task 结束的时候遍历他的 tid 所对应的 wait 列表，如果有等待的 task 需要执行就放到任务队列中等待调度
         for tk in self.exit_waiting.pop(task.tid, []):
@@ -102,9 +122,30 @@ class Scheduler(object):
         else:
             return False
 
+    def waitforread(self, task, fd):
+        self.read_waiting[fd] = task
 
+    def waitforwrite(self, task, fd):
+        self.write_waiting[fd] = task
+
+    def iopool(self, timeout):
+        if self.read_waiting or self.write_waiting:
+            r, w, e = select.select(self.read_waiting, self.write_waiting, [], timeout)
+            for readable in r:
+                self.schedule(self.read_waiting.pop(readable))
+            for writeable in w:
+                self.schedule(self.write_waiting.pop(writeable))
+
+    def iotask(self):
+        while True:
+            if self.ready.empty():
+                self.iopool(None)
+            else:
+                self.iopool(0)
+            yield
 
     def mainloop(self):
+        self.new(self.iotask())
         while self.taskmap:
             runtask = self.ready.get()
             try:
@@ -117,6 +158,9 @@ class Scheduler(object):
             except StopIteration:
                 self.exit(runtask)
                 continue  # 如果检测到了异常, exit后就continue，并不再执行后面的调度器语句
+            except KeyboardInterrupt:
+                print 'end'
+                break
             self.schedule(runtask)  # 再将runtask加入到调度器中，继续下一个yield语句
 
 
@@ -151,11 +195,13 @@ def main():
     ti = yield NewTask(foo1())
     #
     # t = yield KillTask(ti)
-    #
+    # 可以看出来，在foo1()函数执行完毕之前，下面的语句就已经执行了，这就是异步了吧？
     print('wait for %s' % str(ti))
+    print 'hello world'
     rs = yield WaitTask(ti)
     if rs:
         print('Done')
+
 
 if __name__ == '__main__':
     schedule = Scheduler()

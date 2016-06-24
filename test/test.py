@@ -172,3 +172,13 @@ if __name__ == '__main__':
     #
     # s = re.match(r'.*love.*', url)
     # print(s.group())
+    # def bar():
+    #     yield 1
+    #
+    # def foo():
+    #     yield bar()
+    #     print 'hello'
+    #
+    # foo()
+    while True:
+        print 'iii'
